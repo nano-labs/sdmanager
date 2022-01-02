@@ -1,18 +1,26 @@
 #include <SPI.h>
 //#include <SD.h>
 #include "SdFat.h"
-SdFat SD;
+#define SD_FAT_TYPE 1
+//SdFat SD;
+SdFat32 SD;
+File32 root;
+File32 entry;
 
 File myFile;
+//File root;
+//File entry;
 String filename;
 String payload;
+String pwd;
 int packages;
 int last;
 byte buffer[201];
 char terminator = 58;
 char seminator = 33;
-char awk[3] = "awk";
-
+const char awk[3] = "awk";
+const char eoc[4] = "!eoc";  // end of command
+const char eoi[4] = "!eoi";  // end of item
 
 void setup() {
   Serial.begin(500000);
@@ -58,5 +66,29 @@ void loop() {
     myFile.close();
     delay(1000);
     Serial.print("DONE!");
+  } else if (payload == "navigate") {
+    pwd = Serial.readStringUntil(seminator);
+    root = SD.open(pwd);
+    root.rewindDirectory();
+    sendAwk();
+    while (entry.openNext(&root, O_RDONLY)) {
+      entry.printFileSize(&Serial);
+      Serial.write(seminator);
+      entry.printModifyDateTime(&Serial);
+      Serial.write(seminator);
+      entry.printName(&Serial);
+      if (entry.isDir()) {
+        Serial.write("!directory");
+      } else {
+        Serial.write("!file");
+      }
+      Serial.write(eoi);
+      entry.close();
+    }    
+    Serial.print(eoc);
+    root.close();
+  } else if (payload == "delete") {
+    pwd = Serial.readStringUntil(seminator);
+    SD.remove(pwd);
   }
 }
