@@ -19,8 +19,8 @@ byte buffer[201];
 char terminator = 58;
 char seminator = 33;
 const char awk[3] = "awk";
-const char eoc[4] = "!eoc";  // end of command
-const char eoi[4] = "!eoi";  // end of item
+char eoi[] = {"!eoi"};  // end of item
+char eoc[] = {"!eoc"};  // end of command
 
 void setup() {
   Serial.begin(500000);
@@ -42,7 +42,19 @@ void loop() {
   payload = Serial.readStringUntil(terminator);
   if (payload == "filename") {
     filename = Serial.readStringUntil(seminator);
-    sendAwk();
+    if (SD.exists(filename)) {
+      Serial.print("err");
+      Serial.print("File already exists!");
+    } else {
+      myFile = SD.open(filename, FILE_WRITE);
+      if (!myFile) {
+        Serial.print("err");
+        Serial.print("Path cannot be created!");
+      } else {
+        sendAwk();
+      }
+      myFile.close();
+    }
   } else if (payload == "packages") {
     packages = Serial.readStringUntil(seminator).toInt();
     sendAwk();
@@ -90,5 +102,18 @@ void loop() {
   } else if (payload == "delete") {
     pwd = Serial.readStringUntil(seminator);
     SD.remove(pwd);
+  } else if (payload == "download") {
+    pwd = Serial.readStringUntil(seminator);
+    myFile = SD.open(pwd, FILE_READ);
+    myFile.seek(0);
+    sendAwk();
+    myFile.printFileSize(&Serial);
+    Serial.write(eoi);
+    myFile.seek(0);
+    while (myFile.available()) {
+      Serial.write(myFile.read());
+    }
+    myFile.close();
+    Serial.write(eoc);
   }
 }

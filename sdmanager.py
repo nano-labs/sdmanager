@@ -8,12 +8,17 @@ from time import sleep, time
 
 import serial
 from tqdm import tqdm
-from bullet import Bullet, SlidePrompt, utils, YesNo
+from bullet import Bullet, SlidePrompt, utils, YesNo, Input
 
 PACKAGE_SIZE = 200
 
+END_OF_ITEM = b"!eoi"
+END_OF_COMMAND = b"!eoc"
+
 
 def exit(message):
+    if isinstance(message, bytes):
+        message = message.decode()
     print(message)
     sys.exit(0)
 
@@ -94,19 +99,39 @@ class SDManager:
                 buffer = b""
             buffer += self.serial.read()
         loggit(buffer)
-        self.wait_for(b"!eoi")
         return items
 
-    def send_file(self, file_path):
+    def read_until(self, terminator, timeout=10):
+        end = time() + timeout
+        buffer = b""
+        while not buffer.endswith(terminator):
+            buffer += self.serial.read()
+            if time() > end:
+                loggit('Exception("read_until timeout.")', buffer)
+                raise Exception("read_until timeout.")
+        loggit(buffer)
+        return buffer
+
+    def send_file(self, file_path, dst=None):
         with open(file_path, "rb") as f:
             content = f.read()
 
         filename = os.path.basename(file_path)
+        if not dst:
+            dst = filename
+        elif not dst.endswith(filename):
+            dst = f"{dst}/{filename}".replace("//", "/")
         packages = ceil(len(content) / PACKAGE_SIZE)
         last_package = len(content) % PACKAGE_SIZE or PACKAGE_SIZE
-        print(f"filename:{filename}!")
-        self.send_buffer(f"filename:{filename}!".encode())
-        self.wait_for_awk()
+        print(f"filename:{dst}!")
+        self.send_buffer(f"filename:{dst}!".encode())
+        response = self.read_buffer(3)
+        if response == b"awk":
+            pass
+        elif response == b"err":
+            error = self.read_until(b"!")
+            exit(f"Error: {error.decode()}")
+
         print(f"Size: {len(content)} bytes")
         print(f"packages:{packages}!")
         self.send_buffer(f"packages:{packages}!".encode())
@@ -127,7 +152,7 @@ class SDManager:
         parent = self.tree[pwd]
         self.send_buffer(f"navigate:{pwd}!".encode())
         self.wait_for_awk()
-        items = self.read_many(separator=b"!eoi", terminator=b"!eoc", timeout=15)
+        items = self.read_many(separator=b"!eoi", terminator=END_OF_COMMAND, timeout=15)
         entries = []
         max_size, max_date, max_name = len("size"), len("modified"), len("name")
         for item in items:
@@ -172,7 +197,7 @@ class SDManager:
             utils.clearConsoleUp(5)
             utils.moveCursorDown(1)
             if option == "\tDownload":
-                pass
+                self.download(path, pwd)
             elif option == "\tDelete":
                 self.delete(path, pwd)
             else:
@@ -187,10 +212,48 @@ class SDManager:
             self.send_buffer(f"delete:{filepath}!".encode())
         self.navigate(pwd)
 
+    def download(self, filepath, pwd):
+        filename = os.path.basename(filepath)
+        current_path = os.path.dirname(os.path.abspath("__file__"))
+        cli = Input(prompt="Save as: ", default=f"{current_path}/{filename}")
+        filename = cli.launch()
+        utils.clearConsoleUp(2)
+        utils.moveCursorDown(1)
+        if os.path.exists(filename):
+            cli = YesNo(prompt=f"File '{filename}' already exists. Overwrite? ", default="n")
+            sure = cli.launch()
+            utils.clearConsoleUp(2)
+            utils.moveCursorDown(1)
+            if not sure:
+                self.navigate(pwd)
+        self.send_buffer(f"download:{filepath}!".encode())
+        self.wait_for_awk()
+        size = int(self.read_until(END_OF_ITEM).decode().replace(END_OF_ITEM.decode(), ""))
+        with open(filename, "wb") as outfile:
+            for b in tqdm(range(size), unit="B", colour="green"):
+                outfile.write(self.serial.read())
+        self.wait_for(END_OF_COMMAND)
+        self.navigate(pwd)
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "send":
+    if len(sys.argv) == 1:
+        try:
+            print("<Ctrl>+C to exit")
+            SDManager().navigate()
+        except KeyboardInterrupt:
+            print("Bye!")
+            sys.exit(0)
+    elif len(sys.argv) == 3 and sys.argv[1] in ["--send", "-s"]:
         filename = sys.argv[2]
-        SDManager().send_file(filename)
+        SDManager().send_file(filename, None)
+    elif len(sys.argv) == 4 and sys.argv[1] in ["--send", "-s"]:
+        filename = sys.argv[2]
+        dst = sys.argv[3]
+        SDManager().send_file(filename, dst)
     else:
-        SDManager().navigate()
+        print(
+            "Usage:\n"
+            "\tsdmanager                      : Navigate the SD card content\n"
+            "\tsdmanager -s/--send <filepath> : Send given file to the SD card\n"
+            "\tsdmanager -h/--help            : Show this message\n"
+        )
